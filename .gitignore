@@ -1,162 +1,185 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Let's get going and set the provided AWS credentials for the IAM user john
+aws configure --profile john
 
-# C extensions
-*.so
+# Using the AWS equivilant of the Windows/Linux whoami command 
+aws sts get-caller-identity --profile john
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Let's update the password for the user and access the console
+aws iam update-login-profile --user-name john --password <password> --no-password-reset-required
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+*Please note: For this solution to work, they need to be in the same AWS region.
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Let's sign into the console with credentials we just retrieved
+# Head over to S3 and create our input bucket, we've named it input-bucket-xx and clicked create
+# Now we need S3 to send an event notification to our listening Lambda function whenever a new object is uploaded
+# Navigate to the Properties tab of the bucket, and in the Event notifications section, click Create event notification
+# Under General configuration enter an event name, and under Event types check the box for All object create events
+# Scroll down to the Destination, choose Lamda function then your Lambda function
+# Then click the permissions tab and click Edit under Bucket policy.
+# Add the following bucket policy (adjusted for your bucket name) and save the changes. The policy allows the Lambda service to list the contents of the bucket and download files.
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "lambda.amazonaws.com"
+            },
+            "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::input-bucket-20",
+                "arn:aws:s3:::input-bucket-20/*"
+            ]
+        }
+    ]
+}
 
-# Translations
-*.mo
-*.pot
+# Create a storage bucket (e.g., scanned-object-xx) for non-malicious files and configure it to allow uploads from the Lambda service
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "lambda.amazonaws.com"
+            },
+            "Action": "s3:PutObject",
+            "Resource": [
+                "arn:aws:s3:::scanned-object-20",
+                "arn:aws:s3:::scanned-object-20/*"
+            ]
+        }
+    ]
+}
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Finally, create a quarantine bucket (e.g., quarantined-object-xx) for malicious files and allow the Lambda service to upload to it
 
-# Scrapy stuff:
-.scrapy
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "lambda.amazonaws.com"
+            },
+            "Action": "s3:PutObject",
+            "Resource": [
+                "arn:aws:s3:::quarantined-object-20",
+                "arn:aws:s3:::quarantined-object-20/*"
+            ]
+        }
+    ]
+}
 
-# Sphinx documentation
-docs/_build/
+# Now, sign up for a API Virustotal account to get an API key
+# Let's examine the snippet of the Lambda code that retrieves the API key
 
-# PyBuilder
-.pybuilder/
-target/
+ # Get the VT API key from Secrets Manager
+    print('Getting VT API key from Secrets Manager.')
+    try:
+        secret_response = secretsmanager.get_secret_value(
+            SecretId=VT_API_KEY_SECRET
+        )
+        vt_api_key = json.loads(secret_response['SecretString'])['api_key']
+        print(f'Retrieved VT API key: {vt_api_key}')  # Debug statement
+    except Exception as e:
+        print(e)
+        print(f'Error retrieving secret {VT_API_KEY_SECRET}.')
+        raise e     
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# With the VirusTotal API key copied to the clipboard, let's navigate to Secrets Manager and create the secret. Select the option Other type of secret and create the key/value pair
+# Click Next and name the secret anything you want, e.g. virustotal_api_key_xx .
+# Click Next, Next and then Store . Refresh the window and you'll see the newly created secret. Click on it and copy the Secret ARN to an empty document
+# Now we need to edit the resource permissions for the secret. Click Edit permissions and paste in the policy below, and but don't save it. Replace the secret ARN with the value that you copied.
 
-# IPython
-profile_default/
-ipython_config.py
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::<ID>:role/policy_for_lambda_function"
+            },
+            "Action": "secretsmanager:GetSecretValue",
+            "Resource": "arn:aws:secretsmanager:us-west-2:<ID>:secret:virustotal_api_key_20-13LCvO"
+        }
+    ]
+}
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+# Then in a new tab, open the Lambda console and click on the s3_scanner_function function. Click the Configuration tab and then the Permissions section
+# This shows the name of the role that is attached to our Lambda instance. Click on the role name to view its details in a new tab
+# Copy the ARN, and then expand the inline policy that's attached to the role.
+# This is a policy for our Lambda role which grants broad permissions to interact with various AWS services, including creating log groups and streams, invoking Lambda functions, full access to S3, retrieving secrets, and publishing SNS messages
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": "logs:CreateLogGroup",
+            "Effect": "Allow",
+            "Resource": "arn:aws:logs:us-west-2:115372617301:*"
+        },
+        {
+            "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:logs:us-west-2:115372617301:log-group:/aws/lambda/s3_scanner_function:*"
+            ]
+        },
+        {
+            "Action": "lambda:InvokeFunction",
+            "Effect": "Allow",
+            "Resource": "arn:aws:lambda:us-west-2:115372617301:function:s3_scanner_function"
+        },
+        {
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:ListBucket",
+                "s3:DeleteObject"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::*"
+            ]
+        },
+        {
+            "Action": [
+                "secretsmanager:GetSecretValue"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:secretsmanager:us-west-2:115372617301:secret:*"
+        },
+        {
+            "Action": [
+                "sns:Publish"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:sns:us-west-2:115372617301:*"
+        }
+    ]
+}
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+# Let's head back to the Secrets Manager tab. Paste the copied Lambda IAM role ARN over the existing role ARN, and then save the resource permissions policy document
+# Create an SNS topic with the type set to Standard . We named it malware-alerts-xx and clicked Create
+# Now we need to create an SNS Subscription, that will allow us to receive an email whenever a malicious file is detected
+# Under Topic ARN, select the created topic. The Protocol should be set to Email, and the Endpoint should be your email address
+# This status after creating the subscription is set to Pending confirmation and it your inbox you should see the email below asking you to confirm the subscription
+# Click on the link in the email to confirm subscription
+# Clicking on the Lamdba function if it isn't already open and then click the Configuration tab. Click Environment variables
+# Replace the default environment variable values with the bucket names, topic ARN and secret name that you created
+# Now we're able to test with a malicous file, typically with EICAR test virus
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
 
-# SageMath parsed files
-*.sage.py
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
